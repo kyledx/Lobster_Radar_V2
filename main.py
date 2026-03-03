@@ -1,188 +1,165 @@
 import os
+import json
 import time
-import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import feedparser
-from fastapi import FastAPI
-import uvicorn
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from openai import OpenAI
 
-# --- 系统配置 ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# ================= 🔧 云端系统配置 =================
+# 🛡️ 军用级安全：从 GitHub Secrets 环境变量中动态读取 API KEY，绝不明文暴露！
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
-app = FastAPI(title="Lobster Radar NLP Engine V3.0 (WallStreet Edition)")
-analyzer = SentimentIntensityAnalyzer()
+# 强制防呆检测：如果没有读到 Key，直接拉响警报并停止运行
+if not OPENAI_API_KEY:
+    raise ValueError("🚨 致命错误：找不到 OPENAI_API_KEY！请检查 GitHub Secrets 是否配置正确！")
 
-# --- 狙击目标池 ---
-STOCK_POOL = [
-    "NVDA", "AMD", "AVGO", "TSM", "ARM", "MU", "INTC", "QCOM", "AAPL", "MSFT", 
-    "GOOGL", "META", "AMZN", "NFLX", "ADBE", "PLTR", "CVX", "XOM", "VST", "CEG", 
-    "NRG", "GEV", "NEM", "FCX", "LLY", "NVO", "MSTR", "COIN", "JPM", "V", "MA", 
-    "BRK.B", "GE", "RTX", "LMT", "WM", "CAT", "COST", "WMT"
+MODEL_NAME = "gpt-4o"  # 使用 GPT-4o 获取顶级逻辑推理能力
+
+# 📡 全球宏观雷达阵列 (RSS Feeds)
+RSS_FEEDS = [
+    "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664", # CNBC 财经
+    "https://feeds.a.dj.com/rss/RSSMarketsMain.xml", # 华尔街日报 市场
+    "https://www.investing.com/rss/news_25.rss", # Investing 宏观
+    "https://www.investing.com/rss/commodities.rss", # 大宗商品 (原油/黄金)
+    "https://finance.yahoo.com/news/rssindex" # 雅虎财经
 ]
 
-SECTOR_POOL = ["SPY", "QQQ", "XLK", "XLE", "XLF", "GLD"]
-
-# ================= 🛡️ 智能上下文 NLP 过滤系统 =================
-FALSE_ALARMS = [
-    "price war", "bidding war", "talent war", "culture war", 
-    "war on inflation", "war on drugs", "streaming war", "cloud war"
+# 🎯 监控标的池 (与 V29.86 战车对齐)
+SECTORS = ["XLK", "XLE", "XLF", "GLD", "XLU", "XLC", "XLY"]
+STOCKS = [
+    "NVDA", "AAPL", "MSFT", "AMD", "AVGO", "TSM", "META", "GOOGL", "AMZN",
+    "XOM", "CVX", "CEG", "VST", "NRG",
+    "JPM", "V", "MA",
+    "NEM", "FCX", "MSTR", "COIN", "LLY"
 ]
 
-GEO_ACTORS = [
-    "russia", "ukraine", "nato", "china", "taiwan", "iran", "israel", 
-    "middle east", "north korea", "us military", "pentagon"
-]
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - 大龙虾2.0(云端版) - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
+logger = logging.getLogger()
 
-CONFLICT_ACTIONS = [
-    "war", "missile", "airstrike", "invasion", "troops", "nuclear", "assassination"
-]
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-FINANCIAL_NUKES = [
-    "emergency rate cut", "stock market crash", "trading halted", "limit down"
-]
-
-def check_black_swan(text: str) -> bool:
-    """第一防线：只拦截真正的毁灭级黑天鹅 (触发全仓清空)"""
-    if not text: return False
-    t = text.lower()
+def fetch_global_news():
+    """📡 扫描全球新闻主干道，提取核心头条"""
+    logger.info("📡 雷达天线展开，正在扫描全球宏观新闻...")
+    headlines = []
     
-    if any(nuke in t for nuke in FINANCIAL_NUKES): return True
-    
-    is_fake_war = any(fake in t for fake in FALSE_ALARMS)
-    has_action = any(action in t for action in CONFLICT_ACTIONS)
-    
-    if has_action and not is_fake_war:
-        has_actor = any(actor in t for actor in GEO_ACTORS)
-        if has_actor: return True
-            
-    return False
-
-# ================= 📈 专业金融催化剂评分引擎 =================
-# 当出现以下词汇时，直接暴增或暴扣该股票的独立分数，指导 V29.82 单独重仓或割肉！
-
-EARNINGS_BULLISH = [
-    "beat estimates", "guidance raised", "strong earnings", "revenue growth", 
-    "profit surge", "dividend raised", "record high", "share buyback"
-]
-
-EARNINGS_BEARISH = [
-    "miss estimates", "guidance cut", "weak earnings", "revenue fell", 
-    "profit warning", "disappointing", "downgraded"
-]
-
-MACRO_BEARISH = [
-    "tariff", "trade war", "sanctions", "export controls", "embargo", 
-    "antitrust probe", "sec investigation"
-]
-
-def calculate_financial_score(text: str) -> float:
-    """第二防线：为 V29.82 输出精确到个股的买卖强度分数"""
-    t = text.lower()
-    # 基础通用 NLP 情感得分 (-1.0 到 1.0)
-    base_score = analyzer.polarity_scores(text)['compound']
-    
-    # 华尔街术语暴击加成
-    if any(word in t for word in EARNINGS_BULLISH):
-        base_score += 0.5  # 财报超预期，分数强行拉高，确保 V29.82 追涨
-        
-    if any(word in t for word in EARNINGS_BEARISH):
-        base_score -= 0.5  # 财报爆雷，分数强行踩死，确保 V29.82 割肉
-        
-    if any(word in t for word in MACRO_BEARISH):
-        base_score -= 0.6  # 遭遇关税/贸易战/制裁，分数踩死，甚至可以做空
-        
-    # 限制分数在 -1.0 到 1.0 之间
-    return max(-1.0, min(1.0, base_score))
-
-# ==============================================================
-
-current_sentiment = {
-    "timestamp": datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
-    "macro_sentiment": 0.0,
-    "sector_sentiment": {s: 0.0 for s in SECTOR_POOL},
-    "stock_sentiment": {s: 0.0 for s in STOCK_POOL},
-    "emergency_halt": False
-}
-
-def fetch_and_analyze_sync():
-    global current_sentiment
-    logger.info("🦞 大龙虾雷达启动：金融级深度扫描中...")
-    
-    emergency_triggered = False
-    new_macro_scores = []
-    new_sector_sentiment = {}
-    new_stock_sentiment = {}
-
-    try:
-        # 1. 扫描板块
-        for sector in SECTOR_POOL:
-            url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={sector}"
+    for url in RSS_FEEDS:
+        try:
             feed = feedparser.parse(url)
-            scores = []
-            for entry in feed.entries[:5]: 
-                text = f"{entry.title} {entry.get('summary', '')}"
-                if check_black_swan(text):
-                    emergency_triggered = True
-                    logger.warning(f"🚨 真实黑天鹅警报触发! 来源: {sector} -> {entry.title}")
-                scores.append(calculate_financial_score(text)) # 使用全新的金融打分器
-            
-            avg_score = sum(scores) / len(scores) if scores else 0.0
-            new_sector_sentiment[sector] = round(avg_score, 3)
-            new_macro_scores.extend(scores)
-            time.sleep(0.5) 
-
-        # 2. 扫描个股
-        for stock in STOCK_POOL:
-            url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={stock}"
-            feed = feedparser.parse(url)
-            scores = []
+            # 每个源只取最新的 5 条核心新闻，防止 Token 爆炸
             for entry in feed.entries[:5]:
-                text = f"{entry.title}"
-                if check_black_swan(text):
-                    emergency_triggered = True
-                    logger.warning(f"🚨 真实黑天鹅警报触发! 来源: {stock} -> {entry.title}")
-                scores.append(calculate_financial_score(text)) # 使用全新的金融打分器
-                
-            avg_score = sum(scores) / len(scores) if scores else 0.0
-            new_stock_sentiment[stock] = round(avg_score, 3)
-            time.sleep(0.5)
-
-        # 3. 数据注入
-        macro_avg = sum(new_macro_scores) / len(new_macro_scores) if new_macro_scores else 0.0
-        
-        current_sentiment["timestamp"] = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S (UTC)')
-        current_sentiment["macro_sentiment"] = round(macro_avg, 3)
-        current_sentiment["sector_sentiment"] = new_sector_sentiment
-        current_sentiment["stock_sentiment"] = new_stock_sentiment
-        
-        if emergency_triggered:
-            current_sentiment["emergency_halt"] = True
+                headlines.append(f"- {entry.title}: {entry.get('summary', '')[:200]}")
+        except Exception as e:
+            logger.error(f"⚠️ 雷达源读取失败 {url}: {e}")
             
-        logger.info(f"✅ 扫描完成。宏观情绪: {macro_avg:.3f} | 黑天鹅状态: {current_sentiment['emergency_halt']}")
+    return headlines
 
+def call_gpt4_financial_brain(news_text):
+    """🧠 召唤 GPT-4 华尔街首席宏观分析师进行逻辑推演"""
+    
+    prompt = f"""
+你现在是华尔街最顶尖的宏观对冲基金经理兼量化策略师。
+我将为你提供过去几小时内美股和全球宏观的最新新闻头条。
+你需要深刻理解“资金轮动、地缘政治博弈、美元指数潮汐、跨资产传导”等高级金融逻辑。
+
+【核心常识纠正】：
+1. 战争/地缘冲突 绝对不等于“世界末日”。它通常对能源(XLE, XOM)是极大利好，对国防军工是利好。
+2. 战争不一定利好黄金。如果战争引发通胀预期，导致美联储加息预期升温，强势美元反而会镇压黄金(GLD)下跌。
+3. 科技股(XLK)可能因为供应链危机或高利率承压，此时资金会流入避风港(公用事业XLU、能源XLE)。
+
+【任务要求】：
+阅读以下新闻，推演对具体板块和个股的情绪影响。
+输出必须是纯粹的 JSON 格式，严格包含以下结构，不要输出任何额外的解释或Markdown标记（如 ```json 等）：
+
+{{
+  "emergency_halt": false,  // 只有发生爆发第三次世界大战、美股熔断、美国债务违约等绝对毁灭性事件时才给 true。普通冲突、加息、暴跌一律给 false！
+  "macro_sentiment": 0.0,   // 大盘整体情绪，范围 -1.0 到 1.0
+  "sector_sentiment": {{
+    "XLK": 0.0, "XLE": 0.0, "GLD": 0.0, "XLF": 0.0, "XLU": 0.0
+  }}, // 范围 -1.0 到 1.0。重点区分避风港和承压板块。
+  "stock_sentiment": {{
+    // 在这里列出受新闻强烈影响的个股，范围 -1.0 到 1.0。中性(0.0)的可以不写。
+    // 备选池: {', '.join(STOCKS)}
+  }}
+}}
+
+【最新全球新闻】：
+{news_text}
+"""
+    
+    try:
+        logger.info("🧠 正在将全球情报注入 GPT-4 宏观引擎进行降维推演...")
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": "You are a professional Wall Street algorithmic trading AI. You output strict, valid JSON only."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2, # 保持低温度，确保逻辑严谨和 JSON 格式稳定
+            max_tokens=1000
+        )
+        
+        result_text = response.choices[0].message.content.strip()
+        
+        # 清理可能附带的 Markdown 标记
+        if result_text.startswith("```json"):
+            result_text = result_text[7:]
+        if result_text.endswith("```"):
+            result_text = result_text[:-3]
+            
+        sentiment_data = json.loads(result_text)
+        return sentiment_data
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"❌ GPT-4 输出的 JSON 格式损坏: {e}\n输出内容: {result_text}")
+        return None
     except Exception as e:
-        logger.error(f"❌ 爬虫异常: {e}")
+        logger.error(f"❌ GPT-4 大脑调用失败: {e}")
+        return None
 
-async def radar_loop():
-    while True:
-        await asyncio.to_thread(fetch_and_analyze_sync)
-        await asyncio.sleep(600)
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(radar_loop())
-
-@app.get("/")
-def read_root():
-    return {"status": "🦞 Lobster Radar V3 Online. WallStreet Financial Engine Active."}
-
-@app.get("/sentiment")
-def get_sentiment():
-    return current_sentiment
+def main():
+    logger.info("🦞 大龙虾 2.0 (全视之眼 GPT-4 云端部署版) 已启动！监听全球主干道...")
+    
+    try:
+        # 1. 抓取全球新闻
+        headlines = fetch_global_news()
+        
+        if not headlines:
+            logger.warning("⚠️ 未抓取到任何新闻，流程结束。")
+            return
+            
+        news_text = "\n".join(headlines)
+        
+        # 2. 召唤 GPT-4 脑核心计算情绪
+        sentiment_data = call_gpt4_financial_brain(news_text)
+        
+        if sentiment_data:
+            # 3. 压入时间戳 (V29.86 防呆机制需要此时间戳验证数据新鲜度)
+            sentiment_data['timestamp'] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+            
+            # 4. 写入指令文件给战车 (供 GitHub Actions 提交到仓库)
+            with open('news_sentiment.json', 'w', encoding='utf-8') as f:
+                json.dump(sentiment_data, f, indent=4, ensure_ascii=False)
+            
+            # --- 日志汇报 ---
+            halt_msg = "🚨核弹预警🚨" if sentiment_data.get('emergency_halt') else "🟢安全"
+            macro_score = sentiment_data.get('macro_sentiment', 0.0)
+            logger.info(f"✅ 情报降维完成 | 状态: {halt_msg} | 宏观情绪: {macro_score:.2f}")
+            logger.info(f"板块分化: {sentiment_data.get('sector_sentiment', {})}")
+            
+            stocks = sentiment_data.get('stock_sentiment', {})
+            hot_stocks = {k: v for k, v in stocks.items() if abs(v) >= 0.3}
+            if hot_stocks:
+                logger.info(f"🔥 狙击目标锁定: {hot_stocks}")
+            else:
+                logger.info("❄️ 当前无极端异动个股。")
+                
+        else:
+            logger.warning("⚠️ 本轮情报解析失败。")
+            
+    except Exception as e:
+        logger.error(f"🚨 主程序异常: {e}")
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    main()
