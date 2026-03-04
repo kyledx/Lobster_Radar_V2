@@ -2,17 +2,15 @@ import os
 import json
 import logging
 import re
-import asyncio
+import time
+import threading
 from datetime import datetime, timezone
 import feedparser
 from openai import OpenAI
 from fastapi import FastAPI
 import uvicorn
-from contextlib import asynccontextmanager
 
 # ================= 🔧 核心配置区 =================
-# 安全提取 API KEY，完全避免明文暴露
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 MODEL_NAME = "gpt-4o"  
 FETCH_INTERVAL_MINUTES = 15  
 
@@ -24,7 +22,7 @@ RSS_FEEDS = [
     "https://finance.yahoo.com/news/rssindex" 
 ]
 
-# 🎯 监控标的池 (已与 V29.86 战车 100% 对齐)
+# 🎯 监控标的池 (与 V29.86 100% 对齐)
 STOCKS = [
     "NVDA", "AMD", "AVGO", "TSM", "ARM", "MSFT", "GOOGL", "META", "AMZN", "PLTR",
     "AAPL", "NFLX", "ADBE", "MU", "INTC", "QCOM", "TSLA",
@@ -34,7 +32,7 @@ STOCKS = [
     "NEM", "FCX", "GLD", "IAU"
 ]
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - 大龙虾2.0 (FastAPI异步版) - %(message)s', datefmt='%H:%M:%S')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - 大龙虾2.0 (FastAPI经典版) - %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger()
 
 # ================= 🧠 GPT-4 宏观推演引擎 =================
@@ -50,8 +48,10 @@ def fetch_global_news():
     return headlines
 
 def call_gpt4_financial_brain(news_text):
-    if not OPENAI_API_KEY:
-        logger.error("🚨 致命错误：未配置 OPENAI_API_KEY！请在 Railway 控制台 Variables 中添加。")
+    # 每次调用时动态读取，确保能读到 Railway 的环境变量
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        logger.error("🚨 致命错误：未配置 OPENAI_API_KEY！")
         return None
 
     prompt = f"""你现在是华尔街最顶尖的宏观对冲基金经理兼量化策略师。
@@ -59,7 +59,7 @@ def call_gpt4_financial_brain(news_text):
 你需要深刻理解“资金轮动、地缘政治博弈、美元指数潮汐、跨资产传导”等高级金融逻辑。
 
 【任务要求】：
-阅读以下新闻，推演对具体板块和个股的情绪影响。
+阅读新闻，推演对板块和个股的情绪影响。
 输出必须是纯粹的 JSON 格式，绝对不要包含任何注释符(//)或Markdown标记：
 
 {{
@@ -81,7 +81,7 @@ def call_gpt4_financial_brain(news_text):
 {news_text}
 """
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
@@ -93,19 +93,19 @@ def call_gpt4_financial_brain(news_text):
         )
         result_text = response.choices[0].message.content.strip()
         
-        # 🚀 军用级 JSON 提取：正则表达式强行捕获，绝不报错
+        # 军用级 JSON 提取
         match = re.search(r'\{.*\}', result_text, re.DOTALL)
         if match:
             return json.loads(match.group(0))
         else:
-            logger.error("❌ 无法从 GPT-4 回复中提取有效的 JSON 结构。")
             return None
-            
     except Exception as e:
-        logger.error(f"❌ GPT-4 调用或解析失败: {e}")
+        logger.error(f"❌ GPT-4 调用失败: {e}")
         return None
 
-# ================= ⚙️ 现代化 FastAPI 异步框架核心 =================
+# ================= ⚙️ 经典 FastAPI 框架核心 =================
+app = FastAPI()
+
 latest_intel = {
     "emergency_halt": False,
     "macro_sentiment": 0.0,
@@ -115,17 +115,16 @@ latest_intel = {
     "status": "Initializing Engine..."
 }
 
-async def background_task():
-    """纯正的 Asyncio 后台异步任务，不阻塞主线程"""
+def background_worker():
+    """最传统的后台死循环线程，绝不卡死主程序"""
     global latest_intel
-    logger.info("🚀 GPT-4 脑核心异步后台线程已启动...")
+    logger.info("🚀 GPT-4 脑核心传统后台线程已点火...")
     while True:
         try:
-            # 将耗时的网络请求放入线程池，保证 FastAPI 主进程极速响应
-            headlines = await asyncio.to_thread(fetch_global_news)
+            headlines = fetch_global_news()
             if headlines:
                 news_text = "\n".join(headlines)
-                data = await asyncio.to_thread(call_gpt4_financial_brain, news_text)
+                data = call_gpt4_financial_brain(news_text)
                 if data:
                     data['timestamp'] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
                     data['status'] = "Online - GPT-4 Engine Active"
@@ -134,24 +133,14 @@ async def background_task():
         except Exception as e:
             logger.error(f"后台刷新异常: {e}")
             
-        # 异步休眠，绝不卡死服务器
-        await asyncio.sleep(FETCH_INTERVAL_MINUTES * 60)
+        time.sleep(FETCH_INTERVAL_MINUTES * 60)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # 服务启动时建立异步任务
-    task = asyncio.create_task(background_task())
-    yield
-    # 服务关闭时清理任务
-    task.cancel()
-
-app = FastAPI(lifespan=lifespan)
+# 恢复最初始、最稳定的启动机制
+@app.on_event("startup")
+def startup_event():
+    t = threading.Thread(target=background_worker, daemon=True)
+    t.start()
 
 @app.get('/')
-async def get_intel():
-    """本地 Courier_Bot.py 访问接口"""
+def get_intel():
     return latest_intel
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run("main:app", host='0.0.0.0', port=port)
