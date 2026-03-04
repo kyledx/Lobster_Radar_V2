@@ -2,4 +2,4 @@ fastapi
 uvicorn
 beautifulsoup4
 feedparser
-vaderSentiment
+openai
