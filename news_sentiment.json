@@ -1,0 +1,19 @@
+{
+    "emergency_halt": false,
+    "macro_sentiment": -0.3,
+    "sector_sentiment": {
+        "XLK": -0.6,
+        "XLE": 0.5,
+        "GLD": -0.4,
+        "XLF": -0.2,
+        "XLU": 0.3
+    },
+    "stock_sentiment": {
+        "NVDA": -0.8,
+        "AMD": -0.7,
+        "AVGO": -0.7,
+        "XOM": 0.6,
+        "NRG": 0.4
+    },
+    "timestamp": "2026-03-04 01:27:32"
+}
