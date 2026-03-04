@@ -3,6 +3,7 @@ import json
 import time
 import threading
 import logging
+import re
 from datetime import datetime, timezone
 import feedparser
 from openai import OpenAI
@@ -11,8 +12,9 @@ import uvicorn
 from contextlib import asynccontextmanager
 
 # ================= 🔧 核心配置区 =================
-# 🚨 修复 API 逻辑：优先读取 Railway 环境变量。如果本地测试，再读取后面的字符串。
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or "sk-proj-请在这里填入您的API密钥"
+# 🚨 彻底移除了带有特征的伪造占位符，防止 GitHub 安全拦截导致“上传失败”！
+# 必须在 Railway 控制台的 Variables 中配置真实密钥
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 MODEL_NAME = "gpt-4o"  
 FETCH_INTERVAL_MINUTES = 15  
 
@@ -24,7 +26,7 @@ RSS_FEEDS = [
     "https://finance.yahoo.com/news/rssindex" 
 ]
 
-# 🎯 监控标的池 (已与 V29.86 战车的 Nobles, Commoners, Hedge Targets 100% 对齐)
+# 🎯 监控标的池 (已与 V29.86 战车 100% 对齐)
 STOCKS = [
     "NVDA", "AMD", "AVGO", "TSM", "ARM", "MSFT", "GOOGL", "META", "AMZN", "PLTR",
     "AAPL", "NFLX", "ADBE", "MU", "INTC", "QCOM", "TSLA",
@@ -50,7 +52,6 @@ def fetch_global_news():
     return headlines
 
 def call_gpt4_financial_brain(news_text):
-    # 🚨 修复 JSON BUG：彻底清除了模板中的所有注释，防止 json.loads 解析崩溃！
     prompt = f"""
 你现在是华尔街最顶尖的宏观对冲基金经理兼量化策略师。
 我将为你提供过去几小时内美股和全球宏观的最新新闻头条。
@@ -79,9 +80,9 @@ def call_gpt4_financial_brain(news_text):
 {news_text}
 """
     try:
-        # 防呆机制：确保 Key 正确存在
-        if not OPENAI_API_KEY or "请在这里填入" in OPENAI_API_KEY:
-            logger.error("🚨 致命错误：未正确配置 OPENAI_API_KEY！将停止推演。")
+        # 确保环境变量中有 Key
+        if not OPENAI_API_KEY:
+            logger.error("🚨 致命错误：未配置 OPENAI_API_KEY！请在 Railway 环境变量中添加。")
             return None
             
         client = OpenAI(api_key=OPENAI_API_KEY)
@@ -97,20 +98,17 @@ def call_gpt4_financial_brain(news_text):
         )
         result_text = response.choices[0].message.content.strip()
         
-        if result_text.startswith("```json"): 
-            result_text = result_text[7:]
-        elif result_text.startswith("```"):
-            result_text = result_text[3:]
+        # 🚀 军用级 JSON 提取：使用正则表达式精准捕获大括号内容，无视 GPT 返回的任何多余字符
+        match = re.search(r'\{.*\}', result_text, re.DOTALL)
+        if match:
+            clean_json = match.group(0)
+            return json.loads(clean_json)
+        else:
+            logger.error("❌ 无法从 GPT-4 回复中提取有效的 JSON 结构。")
+            return None
             
-        if result_text.endswith("```"): 
-            result_text = result_text[:-3]
-            
-        return json.loads(result_text)
-    except json.JSONDecodeError as je:
-        logger.error(f"❌ JSON 解析失败，GPT-4 可能未按要求格式输出: {je}\n原始输出: {result_text}")
-        return None
     except Exception as e:
-        logger.error(f"❌ GPT-4 调用失败: {e}")
+        logger.error(f"❌ GPT-4 调用或解析失败: {e}")
         return None
 
 # ================= ⚙️ 原始 FastAPI 框架核心 =================
@@ -120,7 +118,7 @@ latest_intel = {
     "sector_sentiment": {},
     "stock_sentiment": {},
     "timestamp": datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
-    "status": "Initializing..."
+    "status": "Initializing Engine..."
 }
 
 def background_task():
@@ -135,14 +133,14 @@ def background_task():
                 data = call_gpt4_financial_brain(news_text)
                 if data:
                     data['timestamp'] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-                    data['status'] = "Online"
+                    data['status'] = "Online - GPT-4 Engine Active"
                     latest_intel = data
                     logger.info("✅ 情报已更新并存入内存")
         except Exception as e:
             logger.error(f"刷新异常: {e}")
         time.sleep(FETCH_INTERVAL_MINUTES * 60)
 
-# 🚨 现代化升级：使用 lifespan 替代废弃的 on_event，防止 Railway 部署时卡死
+# 现代化升级：使用 lifespan 管理后台进程
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     t = threading.Thread(target=background_task, daemon=True)
@@ -151,11 +149,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# 🚀 异步化升级：极速响应，告别 Read timed out
 @app.get('/')
-def get_intel():
-    """保留了您上午正常运行的 Web 接口"""
+async def get_intel():
+    """本地访问接口"""
     return latest_intel
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host='0.0.0.0', port=port)
+    uvicorn.run("main:app", host='0.0.0.0', port=port)
