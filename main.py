@@ -33,7 +33,7 @@ STOCKS = [
     "NEM", "FCX", "GLD", "IAU"
 ]
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - 大龙虾2.0 (FastAPI强制JSON版) - %(message)s', datefmt='%H:%M:%S')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - 大龙虾2.0 (FastAPI终极版) - %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger()
 
 # ================= 🧠 GPT-4 宏观推演引擎 =================
@@ -140,8 +140,15 @@ def startup_event():
     t = threading.Thread(target=background_worker, daemon=True)
     t.start()
 
+# 正常大门
 @app.get('/')
 def get_intel():
+    return latest_intel
+
+# 🚀 绝杀 404 错误：开启全路径万能拦截网！
+# 无论 Courier_Bot.py 访问 /news_sentiment.json 还是其他旁门左道，都强制把情报塞给它！
+@app.get('/{catchall:path}')
+def get_intel_catchall(catchall: str):
     return latest_intel
 
 if __name__ == "__main__":
