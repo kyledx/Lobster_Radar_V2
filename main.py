@@ -17,7 +17,7 @@ FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY")
 MODEL_NAME = "gpt-4o"  
 FETCH_INTERVAL_MINUTES = 15  
 
-# 🎯 监控标的池 (已与 V29 战车 100% 对齐)
+# 🎯 监控标的池 
 STOCKS = [
     "NVDA", "AMD", "AVGO", "TSM", "ARM", "MSFT", "GOOGL", "META", "AMZN", "PLTR",
     "AAPL", "NFLX", "ADBE", "MU", "INTC", "QCOM", "TSLA",
@@ -27,68 +27,88 @@ STOCKS = [
     "NEM", "FCX", "GLD", "IAU"
 ]
 
-# 核心驱动标的：只抽取前5个最能代表当前行情的股票获取专属新闻，避免 Token 爆炸
+# 核心驱动标的：只抽取前5个最能代表当前行情的股票获取专属新闻
 CORE_NEWS_TICKERS = ["NVDA", "TSLA", "MSTR", "AAPL", "MSFT"]
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - 大龙虾3.1 (军工防弹版) - %(message)s', datefmt='%H:%M:%S')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - 大龙虾3.3 (全副武装版) - %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger()
 
-# ================= 📡 Finnhub 纯净数据雷达 =================
+# ================= 📡 Finnhub 纯净数据雷达 (带浏览器伪装) =================
 def fetch_finnhub_news():
-    """彻底替换 RSS，使用 Finnhub 抓取结构化金融新闻，加入极度严格的防崩处理"""
+    """军工级防弹版抓取引擎，带浏览器伪装和X光级报错诊断"""
     headlines = []
-    if not FINNHUB_API_KEY:
-        logger.error("🚨 警告：未配置 FINNHUB_API_KEY！无法抓取实时金融新闻。")
+    
+    # 暴力清洗密钥中的空格和换行符，防止破坏 URL 结构
+    raw_key = os.environ.get("FINNHUB_API_KEY")
+    if not raw_key:
+        logger.error("🚨 致命错误：系统环境变量中找不到 FINNHUB_API_KEY！请检查 Railway 设置。")
         return headlines
+        
+    clean_key = raw_key.replace(" ", "").replace("\n", "").strip()
+    
+    # 核心绝杀：伪装成真实的 Windows Chrome 浏览器，穿透反爬虫防火墙
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
 
-    # 1. 抓取全市场宏观新闻 (General Market News)
+    # 1. 抓取大盘新闻
     try:
-        url_general = f"https://finnhub.io/api/v1/news?category=general&token={FINNHUB_API_KEY}"
-        res = requests.get(url_general, timeout=10)
+        url_general = f"https://finnhub.io/api/v1/news?category=general&token={clean_key}"
+        res = requests.get(url_general, headers=headers, timeout=15)
+        
         if res.status_code == 200:
-            news_data = res.json()
+            try:
+                news_data = res.json()
+                if isinstance(news_data, list) and len(news_data) > 0:
+                    headlines.append("【全球宏观与大盘新闻】")
+                    for entry in news_data[:6]:
+                        if isinstance(entry, dict):
+                            headline = str(entry.get('headline') or "无标题").strip()
+                            summary = str(entry.get('summary') or "").strip()
+                            headlines.append(f"- {headline}: {summary[:150]}")
+            except Exception as e:
+                logger.error(f"⚠️ 宏观新闻 JSON 解析失败。API返回内容: {res.text[:200]}")
+        else:
+            # X光透视：如果不是200，精确打印状态码和 Finnhub 返回的拒绝理由
+            logger.error(f"❌ 宏观新闻请求被服务器拒绝！状态码: {res.status_code}, 理由: {res.text[:200]}")
             
-            # 【深度纠正 1】：必须判断数据类型是否为 List，防范 API 限流时返回 {"error": "..."} 导致字典切片崩溃
-            if isinstance(news_data, list):
-                headlines.append("【全球宏观与大盘新闻】")
-                for entry in news_data[:6]: 
-                    # 【深度纠正 2】：彻底防范 Finnhub 返回 null 导致的 NoneType 连环崩溃
-                    headline = entry.get('headline') or "无标题"
-                    summary = entry.get('summary') or ""
-                    headlines.append(f"- {headline}: {summary[:150]}")
-            else:
-                logger.error(f"⚠️ Finnhub宏观接口返回了非预期的格式 (非列表): {news_data}")
     except Exception as e:
-        logger.error(f"❌ Finnhub宏观新闻获取失败: {e}")
+        # 捕捉底层的网络断开、DNS 解析失败等严重异常
+        logger.error(f"❌ 宏观新闻发生底层网络断连: {type(e).__name__} - {str(e)}")
 
-    # 2. 抓取核心风向标个股新闻 (Company Specific News)
+    # 2. 抓取个股新闻
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
     
     for ticker in CORE_NEWS_TICKERS:
         try:
-            url_ticker = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&from={yesterday}&to={today}&token={FINNHUB_API_KEY}"
-            res = requests.get(url_ticker, timeout=5)
+            url_ticker = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&from={yesterday}&to={today}&token={clean_key}"
+            res = requests.get(url_ticker, headers=headers, timeout=10)
+            
             if res.status_code == 200:
-                news_data = res.json()
+                try:
+                    news_data = res.json()
+                    if isinstance(news_data, list) and len(news_data) > 0:
+                        headlines.append(f"\n【{ticker} 专属突发新闻】")
+                        for entry in news_data[:3]:
+                            if isinstance(entry, dict):
+                                headline = str(entry.get('headline') or "无标题").strip()
+                                summary = str(entry.get('summary') or "").strip()
+                                headlines.append(f"- {headline}: {summary[:100]}")
+                except Exception:
+                    logger.error(f"⚠️ {ticker} JSON 解析失败。返回内容: {res.text[:200]}")
+            else:
+                logger.error(f"❌ 抓取 {ticker} 被拒绝！状态码: {res.status_code}, 理由: {res.text[:200]}")
                 
-                # 同样执行严格的数据类型和空值校验
-                if isinstance(news_data, list) and len(news_data) > 0:
-                    headlines.append(f"\n【{ticker} 专属突发新闻】")
-                    for entry in news_data[:3]: 
-                        headline = entry.get('headline') or "无标题"
-                        summary = entry.get('summary') or ""
-                        headlines.append(f"- {headline}: {summary[:100]}")
         except Exception as e:
-            logger.error(f"❌ 抓取 {ticker} 个股新闻失败: {e}")
-            continue
-
+            logger.error(f"❌ 抓取 {ticker} 发生网络断连: {type(e).__name__} - {str(e)}")
+            
     return headlines
 
 # ================= 🧠 GPT-4o 宏观推演引擎 =================
 def call_gpt4_financial_brain(news_text):
     if not OPENAI_API_KEY:
-        logger.error("🚨 致命错误：未配置 OPENAI_API_KEY！请在 Railway 控制台 Variables 中添加。")
+        logger.error("🚨 致命错误：未配置 OPENAI_API_KEY！")
         return None
 
     if not news_text:
@@ -123,12 +143,12 @@ def call_gpt4_financial_brain(news_text):
 {news_text}
 """
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = OpenAI(api_key=OPENAI_API_KEY.strip())
         response = client.chat.completions.create(
             model=MODEL_NAME,
             response_format={ "type": "json_object" },
             messages=[
-                {"role": "system", "content": "You are a professional Wall Street algorithmic trading AI. You must output strictly valid JSON based on Finnhub news data."},
+                {"role": "system", "content": "You are a professional Wall Street algorithmic trading AI. You must output strictly valid JSON."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.2,
@@ -137,7 +157,6 @@ def call_gpt4_financial_brain(news_text):
         
         result_text = response.choices[0].message.content.strip()
         
-        # 【深度纠正 3】：暴力清洗 OpenAI 可能夹带的 Markdown 代码块标记，彻底杜绝 json.loads 报错
         if result_text.startswith("```"):
             result_text = result_text.strip("`").replace("json\n", "", 1).strip()
             
@@ -160,7 +179,6 @@ latest_intel = {
 }
 
 def background_worker():
-    """云端死循环线程：定时抓 Finnhub 新闻 -> GPT-4o 算分 -> 存入内存"""
     global latest_intel
     logger.info("🚀 Finnhub + GPT-4o 脑核心后台线程已点火...")
     while True:
@@ -176,29 +194,26 @@ def background_worker():
                     data['status'] = "Online - Finnhub & GPT-4o Engine Active"
                     latest_intel = data
                     logger.info("🎯 宏观情绪 JSON 已成功生成并更新至 Web 端！")
+            else:
+                logger.warning("⚠️ 本次轮询未获取到任何新闻，AI 推演已跳过。")
         except Exception as e:
             logger.error(f"后台刷新异常: {e}")
             
-        # 严格遵守轮询间隔，防止烧钱
         time.sleep(FETCH_INTERVAL_MINUTES * 60)
 
 @app.on_event("startup")
 def startup_event():
-    # 使用独立的线程运行爬虫和GPT，绝不堵塞 Web 端口
     t = threading.Thread(target=background_worker, daemon=True)
     t.start()
 
-# 正常大门
 @app.get('/')
 def get_intel():
     return latest_intel
 
-# 🚀 绝杀 404 错误：开启全路径万能拦截网！
 @app.get('/{catchall:path}')
 def get_intel_catchall(catchall: str):
     return latest_intel
 
 if __name__ == "__main__":
-    # 保留给本地测试的入口，Railway 将使用 Procfile 启动
     port = int(os.environ.get("PORT", 8080))
     uvicorn.run("main:app", host='0.0.0.0', port=port)
