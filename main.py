@@ -12,7 +12,7 @@ import uvicorn
 # ================= 🔧 核心配置区 =================
 # 🛡️ 军用级安全：从 Railway 环境变量读取双密钥
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY") # 🎯 新增：Finnhub 新闻数据源密钥
+FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY") 
 
 MODEL_NAME = "gpt-4o"  
 FETCH_INTERVAL_MINUTES = 15  
@@ -30,12 +30,12 @@ STOCKS = [
 # 核心驱动标的：只抽取前5个最能代表当前行情的股票获取专属新闻，避免 Token 爆炸
 CORE_NEWS_TICKERS = ["NVDA", "TSLA", "MSTR", "AAPL", "MSFT"]
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - 大龙虾3.0 (Finnhub融合版) - %(message)s', datefmt='%H:%M:%S')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - 大龙虾3.1 (军工防弹版) - %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger()
 
 # ================= 📡 Finnhub 纯净数据雷达 =================
 def fetch_finnhub_news():
-    """彻底替换 RSS，使用 Finnhub 抓取结构化金融新闻"""
+    """彻底替换 RSS，使用 Finnhub 抓取结构化金融新闻，加入极度严格的防崩处理"""
     headlines = []
     if not FINNHUB_API_KEY:
         logger.error("🚨 警告：未配置 FINNHUB_API_KEY！无法抓取实时金融新闻。")
@@ -47,9 +47,17 @@ def fetch_finnhub_news():
         res = requests.get(url_general, timeout=10)
         if res.status_code == 200:
             news_data = res.json()
-            headlines.append("【全球宏观与大盘新闻】")
-            for entry in news_data[:6]: # 提取前6条最新宏观新闻
-                headlines.append(f"- {entry.get('headline')}: {entry.get('summary', '')[:150]}")
+            
+            # 【深度纠正 1】：必须判断数据类型是否为 List，防范 API 限流时返回 {"error": "..."} 导致字典切片崩溃
+            if isinstance(news_data, list):
+                headlines.append("【全球宏观与大盘新闻】")
+                for entry in news_data[:6]: 
+                    # 【深度纠正 2】：彻底防范 Finnhub 返回 null 导致的 NoneType 连环崩溃
+                    headline = entry.get('headline') or "无标题"
+                    summary = entry.get('summary') or ""
+                    headlines.append(f"- {headline}: {summary[:150]}")
+            else:
+                logger.error(f"⚠️ Finnhub宏观接口返回了非预期的格式 (非列表): {news_data}")
     except Exception as e:
         logger.error(f"❌ Finnhub宏观新闻获取失败: {e}")
 
@@ -63,11 +71,16 @@ def fetch_finnhub_news():
             res = requests.get(url_ticker, timeout=5)
             if res.status_code == 200:
                 news_data = res.json()
-                if news_data:
+                
+                # 同样执行严格的数据类型和空值校验
+                if isinstance(news_data, list) and len(news_data) > 0:
                     headlines.append(f"\n【{ticker} 专属突发新闻】")
-                    for entry in news_data[:3]: # 每个核心股票提取前3条新闻
-                        headlines.append(f"- {entry.get('headline')}: {entry.get('summary', '')[:100]}")
-        except Exception:
+                    for entry in news_data[:3]: 
+                        headline = entry.get('headline') or "无标题"
+                        summary = entry.get('summary') or ""
+                        headlines.append(f"- {headline}: {summary[:100]}")
+        except Exception as e:
+            logger.error(f"❌ 抓取 {ticker} 个股新闻失败: {e}")
             continue
 
     return headlines
@@ -113,7 +126,6 @@ def call_gpt4_financial_brain(news_text):
         client = OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
             model=MODEL_NAME,
-            # 🚀 终极武器：强制 API 仅返回标准的 JSON 对象
             response_format={ "type": "json_object" },
             messages=[
                 {"role": "system", "content": "You are a professional Wall Street algorithmic trading AI. You must output strictly valid JSON based on Finnhub news data."},
@@ -124,6 +136,11 @@ def call_gpt4_financial_brain(news_text):
         )
         
         result_text = response.choices[0].message.content.strip()
+        
+        # 【深度纠正 3】：暴力清洗 OpenAI 可能夹带的 Markdown 代码块标记，彻底杜绝 json.loads 报错
+        if result_text.startswith("```"):
+            result_text = result_text.strip("`").replace("json\n", "", 1).strip()
+            
         return json.loads(result_text)
             
     except Exception as e:
