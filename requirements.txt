@@ -1,5 +1,4 @@
 fastapi
 uvicorn
-beautifulsoup4
-feedparser
 openai
+requests
